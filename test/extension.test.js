@@ -24,7 +24,7 @@ test("registers an OAuth-only provider, independent of the legacy host hook", as
       registerProvider(value) { provider = value; },
       on(name, callback) { handlers[name] = callback; },
       registerCommand(name, config) { commands[name] = config; }
-    });
+    }, { mode: "direct" });
     assert.equal(provider.id, COMPAT_PROVIDER);
     assert.equal(provider.auth.apiKey, undefined);
     assert.equal(provider.auth.oauth.isSubscription, true);
@@ -57,7 +57,7 @@ test("stock Pi registers Compat without requiring a profile at startup", async (
   try {
     process.env.PI_CODING_AGENT_DIR = root;
     let registered;
-    await claudeCompat({ registerProvider(provider) { registered = provider; }, on() {}, registerCommand() {} });
+    await claudeCompat({ registerProvider(provider) { registered = provider; }, on() {}, registerCommand() {} }, { mode: "direct" });
     assert.equal(registered.id, COMPAT_PROVIDER);
     assert.equal(typeof registered.streamSimple, "function");
     await assert.rejects(fs.access(path.join(root, "claude-request-compat", "profile.json")));

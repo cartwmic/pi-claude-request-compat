@@ -41,9 +41,32 @@ pi-claude-request-compat run --model claude-opus-4-8 -- --continue
 
 This pins the startup model, including resumed sessions. Starting plain `pi` with only a saved default does **not** provide missing-plugin protection. You can still deliberately select another provider during a session. Requests still consume subscription usage; this is not a spending cap.
 
+## Hub mode (cartwmic fork)
+
+In this fork, `claude-compat` itself can route through a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub. The provider id (`claude-compat`) and API (`claude-compat-messages`) stay the same, so model ids, settings and sessions don't change.
+
+- **Mode:** `PI_CLAUDE_COMPAT_MODE`, read once when the provider loads.
+  - Unset or `proxy`: requests go to the hub with a `cpa_` client key. The origin comes from the `origin` option or `PI_CLAUDE_COMPAT_PROXY_URL`; without one the provider does not load.
+  - `direct`: upstream behaviour. Requests go to api.anthropic.com on the Anthropic OAuth login, and the hub is never contacted.
+  - Any other value, including an empty string, fails closed: the provider does not load.
+- **Fallback:** only when the hub gives no HTTP response at all: a DNS failure, a refused or unreachable connection, or a connect timeout. Then the request is retried once, direct, with the token from the caller's `directAuth(signal)` hook. Any HTTP response from the hub is final, including 401, 429 and 5xx. A reset after connecting is also final, because the hub may already have the request. Without a `directAuth` hook there is no fallback.
+- **Logging:** each fallback shows on the status line (`Compat active · direct (hub unreachable: ENOTFOUND)`) and as a warning. `/claude-compat-status` shows the mode and whether the last request fell back.
+- **Key isolation, test-enforced:** the `cpa_` key goes only to the hub, and the `sk-ant-oat` token only to api.anthropic.com. The fallback drops every caller Authorization header before it sends.
+- **Base URL:** the route picks the endpoint. A model may carry the official base URL or the hub origin; anything else is blocked.
+
+```js
+import claudeCompat from "pi-claude-request-compat";
+export default (pi) => claudeCompat(pi, {
+  origin: "https://cliproxy.example.internal",
+  directAuth: async (signal) => ({ apiKey: await myAnthropicOAuthToken(signal) })
+});
+```
+
+Loaded by Pi on its own (`pi -e`), the extension now defaults to hub mode and needs `PI_CLAUDE_COMPAT_PROXY_URL`. Set `PI_CLAUDE_COMPAT_MODE=direct` for upstream behaviour.
+
 ## Proxy mode (cartwmic fork)
 
-This fork adds a second, separate provider, **Claude Compat Proxy** (`claude-compat-proxy`), for a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub that holds the Anthropic OAuth logins. The default `claude-compat` provider is unchanged.
+This fork also keeps a second, separate provider, **Claude Compat Proxy** (`claude-compat-proxy`), for a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub that holds the Anthropic OAuth logins. It has no fallback. Hub mode, above, is the preferred route.
 
 - The request is the same validated Claude Code request, so the hub sees a native Claude Code client and passes it through.
 - Pi authenticates to the hub with a CLIProxyAPI client key (`cpa_…`). Anthropic tokens and API keys are rejected.
