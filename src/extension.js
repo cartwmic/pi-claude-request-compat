@@ -56,6 +56,13 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
       const send = async (route, profile, names) => {
         let unreachable;
         let responded = false;
+        const canFallBack = Boolean(route.proxy && directAuth);
+        // On the first unreachable error, stop the SDK retry loop at once so the
+        // direct retry is not delayed by backoff. The caller's signal is untouched.
+        const cut = canFallBack ? new AbortController() : undefined;
+        const routeOptions = cut
+          ? { ...route.options, signal: route.options?.signal ? AbortSignal.any([route.options.signal, cut.signal]) : cut.signal }
+          : route.options;
         const middleware = createOAuthRequestMiddleware(profile, {
           strict,
           proxyOrigin: route.proxy,
@@ -67,13 +74,13 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
             onFailure(`${route.proxy ? "The hub" : "Anthropic"} rejected the Claude Compat request (HTTP ${status})`);
           },
           onResponse: () => { responded = true; },
-          onUnreachable: (code) => { unreachable = code; }
+          onUnreachable: (code) => { unreachable ??= code; cut?.abort(); }
         });
         const wireModel = strict ? { ...route.model, provider: "anthropic", api: "anthropic-messages" } : route.model;
         const wireContext = strict ? { ...context, messages: context.messages.map((message) =>
           message.role === "assistant" && message.provider === providerId
             ? { ...message, provider: "anthropic", api: "anthropic-messages" } : message) } : context;
-        const wireOptions = middleware(wireModel, wireContext, route.options);
+        const wireOptions = middleware(wireModel, wireContext, routeOptions);
         // The SDK merges model headers over its own auth header. In proxy mode the
         // key was validated above; the fetch wrapper alone puts it on the wire.
         const sendModel = route.proxy ? { ...wireModel, headers: withoutAuthorization(wireModel.headers) } : wireModel;
@@ -81,8 +88,7 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
         for await (const event of source) {
           // Decision 441: fall back only when the hub never answered (DNS, connect,
           // connect timeout). Any HTTP response from the hub is final.
-          if (route.proxy && directAuth && !emitted && event.type === "error" &&
-              unreachable && !responded && !aborted()) {
+          if (canFallBack && !emitted && event.type === "error" && unreachable && !responded && !aborted()) {
             return unreachable;
           }
           if (strict) {
@@ -100,7 +106,7 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
           emitted = true;
           output.push(decodeToolCalls(event, names));
         }
-        return undefined;
+        return canFallBack && !emitted && unreachable && !responded && !aborted() ? unreachable : undefined;
       };
       try {
         if (strict) {

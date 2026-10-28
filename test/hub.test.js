@@ -216,6 +216,28 @@ test("hub unreachable (DNS, connect, connect timeout) falls back to direct with 
   }
 });
 
+test("the first unreachable attempt cuts the retry loop; without a fallback, retries run as before", async (t) => {
+  await withAgentDir(t);
+  const model = hubModel();
+  const { stream, fallbacks } = hubStream();
+  const a = recorder((url) => { if (url.origin === ORIGIN) throw unreachable("ECONNREFUSED"); return ok(model.id); });
+  const started = Date.now();
+  const result = await stream(model, context(), { apiKey: KEY, maxRetries: 3, fetch: a.fetch }).result();
+  assert.notEqual(result.stopReason, "error", result.errorMessage);
+  assert.ok(Date.now() - started < 400, "no retry backoff before the direct request");
+  assert.equal(a.requests.filter((request) => request.url.origin === ORIGIN).length, 1);
+  assert.deepEqual(fallbacks, ["ECONNREFUSED"]);
+
+  const plain = createFallbackStream(streamSimpleAnthropic, createAssistantMessageEventStream, {
+    strict: true, proxyOrigin: ORIGIN, providerId: COMPAT_PROVIDER, apiId: COMPAT_API
+  });
+  const b = recorder(() => { throw unreachable("ECONNREFUSED"); });
+  const failed = await plain(model, context(), { apiKey: KEY, maxRetries: 1, fetch: b.fetch }).result();
+  assert.equal(failed.stopReason, "error");
+  assert.equal(b.requests.length, 2, "one retry, both to the hub");
+  assert.ok(b.requests.every((request) => request.url.origin === ORIGIN));
+});
+
 test("no fallback when the request is aborted, when no directAuth is set, or when directAuth fails", async (t) => {
   await withAgentDir(t);
   const model = hubModel();
