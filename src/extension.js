@@ -74,7 +74,9 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
             onFailure(`${route.proxy ? "The hub" : "Anthropic"} rejected the Claude Compat request (HTTP ${status})`);
           },
           onResponse: () => { responded = true; },
-          onUnreachable: (code) => { unreachable ??= code; cut?.abort(); }
+          // Once the hub has answered, no fallback is possible: let Pi's retries and
+          // error handling run as usual instead of cutting the loop to an abort.
+          onUnreachable: (code) => { if (responded) return; unreachable ??= code; cut?.abort(); }
         });
         const wireModel = strict ? { ...route.model, provider: "anthropic", api: "anthropic-messages" } : route.model;
         const wireContext = strict ? { ...context, messages: context.messages.map((message) =>
@@ -138,6 +140,7 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
           try {
             auth = await directAuth(options?.signal);
           } catch (error) {
+            if (aborted()) throw error;
             throw new Error(`Claude Compat hub unreachable (${code}); direct fallback unavailable: ${error instanceof Error ? error.message : String(error)}`);
           }
           const directModel = { ...model, baseUrl: OFFICIAL_ORIGIN, headers: withoutAuthorization(model.headers) };
@@ -145,8 +148,9 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
           if (directOptions.headers) directOptions.headers = withoutAuthorization(directOptions.headers);
           assertOfficialUrl(directModel.baseUrl);
           requireOAuth(directOptions, directModel.headers);
-          // Logged only once the direct login is in hand; a failure above surfaces
-          // through onFailure with the unreachable code instead.
+          // Logged only once the direct login is in hand and the request is still
+          // live; a failure above surfaces through onFailure with the unreachable code.
+          options?.signal?.throwIfAborted();
           onFallback(code);
           await send({ proxy: undefined, model: directModel, options: directOptions }, profile, names);
         }
@@ -158,9 +162,10 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
             onFailure(error instanceof Error ? error.message : String(error));
           }
         }
-        output.push({ type: "error", error: {
+        const stopReason = aborted() ? "aborted" : "error";
+        output.push({ type: "error", reason: stopReason, error: {
           role: "assistant", provider: model.provider, api: model.api, model: model.id,
-          timestamp: Date.now(), content: [], stopReason: "error",
+          timestamp: Date.now(), content: [], stopReason,
           errorMessage: error instanceof Error ? error.message : String(error),
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
             totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }

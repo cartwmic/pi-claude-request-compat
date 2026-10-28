@@ -238,6 +238,41 @@ test("the first unreachable attempt cuts the retry loop; without a fallback, ret
   assert.ok(b.requests.every((request) => request.url.origin === ORIGIN));
 });
 
+test("an unreachable retry after a hub HTTP response is a normal error, not an abort or a fallback", async (t) => {
+  await withAgentDir(t);
+  const { stream, fallbacks, failures, directCalls } = hubStream();
+  const { requests, fetch } = recorder((url, n) => {
+    assert.equal(url.origin, ORIGIN, "never direct after the hub answered");
+    if (n === 1) return Response.json({ type: "error", error: { type: "overloaded_error", message: "hub 503" } }, { status: 503 });
+    throw unreachable("ECONNREFUSED");
+  });
+  const result = await stream(hubModel(), context(), { apiKey: KEY, sessionId: SESSION, maxRetries: 2, fetch }).result();
+  assert.equal(result.stopReason, "error", result.errorMessage);
+  assert.ok(requests.length >= 2, "Pi's retry loop still ran");
+  assert.equal(directCalls(), 0);
+  assert.deepEqual(fallbacks, []);
+  assert.ok(failures.length >= 1, "the failure is reported");
+});
+
+test("cancelling during the direct login ends as aborted, without a fallback notice or a direct send", async (t) => {
+  await withAgentDir(t);
+  const model = hubModel();
+  for (const outcome of ["resolves", "rejects"]) {
+    const controller = new AbortController();
+    const { stream, fallbacks, failures } = hubStream({ directAuth: async () => {
+      controller.abort();
+      if (outcome === "rejects") throw new Error("login cancelled");
+      return { apiKey: OAUTH };
+    } });
+    const { requests, fetch } = recorder((url) => { if (url.origin === ORIGIN) throw unreachable("ENOTFOUND"); return ok(model.id); });
+    const result = await stream(model, context(), { apiKey: KEY, maxRetries: 0, signal: controller.signal, fetch }).result();
+    assert.equal(result.stopReason, "aborted", outcome);
+    assert.deepEqual(fallbacks, [], outcome);
+    assert.deepEqual(failures, [], outcome);
+    assert.ok(requests.every((request) => request.url.origin === ORIGIN), outcome);
+  }
+});
+
 test("no fallback when the request is aborted, when no directAuth is set, or when directAuth fails", async (t) => {
   await withAgentDir(t);
   const model = hubModel();
