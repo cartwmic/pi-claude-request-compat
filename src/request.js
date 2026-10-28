@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { readProfile, activeRecipe } from "./profile.js";
 import { selectBetas } from "./recipes.js";
 import { xxhash64 } from "./xxhash64.js";
-import { assertOfficialUrl, requireOAuth, validateEnvelope } from "./strict.js";
+import {
+  PROXY_LAYOUT_TOKEN, assertEndpointUrl, normalizeProxyOrigin, requireOAuth, requireProxyKey, validateEnvelope
+} from "./strict.js";
 
 const BILLING_PREFIX = "x-anthropic-billing-header:";
 const PLACEHOLDER = "cch=00000";
@@ -109,6 +111,11 @@ async function accountIdFor(token, fetchImpl, recipe, signal) {
   return identityByTokenHash.get(key);
 }
 
+export function withoutAuthorization(headers) {
+  if (!headers) return headers;
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== "authorization"));
+}
+
 function stainlessArch(arch) {
   if (arch === "x64" || arch === "amd64") return "x64";
   if (arch === "arm64" || arch === "aarch64") return "arm64";
@@ -154,21 +161,26 @@ function patchCch(body) {
   return bytes;
 }
 
-export function createOAuthRequestMiddleware(profile = readProfile(), { strict = false, onValidated, onRejected } = {}) {
+export function createOAuthRequestMiddleware(profile = readProfile(), { strict = false, onValidated, onRejected, proxyOrigin } = {}) {
   const recipe = activeRecipe(profile);
   if (!profile || !recipe) {
     throw new Error("pi-claude-request-compat needs a local profile; run pi-claude-request-compat init");
   }
+  // Proxy mode: CLIProxyAPI owns the Anthropic OAuth token; Pi sends a cpa_ key.
+  const proxy = proxyOrigin === undefined ? undefined : normalizeProxyOrigin(proxyOrigin);
+  if (proxy && !strict) throw new Error("Claude Compat proxy mode requires the strict route");
+  const isEndpoint = (url) => proxy ? url.origin === proxy : url.hostname === "api.anthropic.com";
   return (model, context, options) => {
     if (strict) {
-      assertOfficialUrl(model.baseUrl);
+      assertEndpointUrl(model.baseUrl, proxy);
     }
     const headerToken = Object.entries(options?.headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
-    const token = strict ? requireOAuth(options, model.headers)
+    const token = proxy ? requireProxyKey(options, model.headers)
+      : strict ? requireOAuth(options, model.headers)
       : options?.apiKey ?? /^Bearer\s+(sk-ant-oat\S*)$/i.exec(headerToken ?? "")?.[1];
     if (strict && model.provider !== "anthropic") throw new Error("Claude Compat blocked unexpected middleware routing");
-    if (model.provider !== "anthropic" || !token?.toLowerCase().includes("sk-ant-oat") ||
-        new URL(model.baseUrl).hostname !== "api.anthropic.com") return options;
+    if (model.provider !== "anthropic" || !(proxy || token?.toLowerCase().includes("sk-ant-oat")) ||
+        !isEndpoint(new URL(model.baseUrl))) return options;
     const sessionId = options.sessionId ?? randomUUID();
     let wireSessionId = sessionId;
     const declaredNames = declaredToolNames(context);
@@ -182,7 +194,9 @@ export function createOAuthRequestMiddleware(profile = readProfile(), { strict =
       ...options,
       // Stock Pi selects its OAuth payload layout from apiKey, even when the
       // caller owns the Authorization header. Keep both paths consistent.
-      apiKey: token,
+      // Proxy mode keeps the OAuth layout with an inert marker; fetch sends the key.
+      apiKey: proxy ? PROXY_LAYOUT_TOKEN : token,
+      headers: proxy ? withoutAuthorization(options.headers) : options.headers,
       cacheRetention: options.cacheRetention ?? (options.requestPurpose === "main" ? profile.cacheMain : undefined),
       onPayload: async (payload, requestModel) => {
         const prior = await previousOnPayload?.(payload, requestModel);
@@ -209,7 +223,8 @@ export function createOAuthRequestMiddleware(profile = readProfile(), { strict =
         }
         const accountId = typeof supplied.account_uuid === "string" && supplied.account_uuid.length > 0
           ? supplied.account_uuid
-          : await accountIdFor(token, baseFetch, recipe, options.signal);
+          // The proxy holds the account; Anthropic's bootstrap endpoint is never called.
+          : proxy ? undefined : await accountIdFor(token, baseFetch, recipe, options.signal);
         const userId = JSON.stringify({
           ...supplied,
           session_id: wireSessionId,
@@ -242,14 +257,20 @@ export function createOAuthRequestMiddleware(profile = readProfile(), { strict =
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input));
         if (strict) {
-          assertOfficialUrl(url);
+          assertEndpointUrl(url, proxy);
           if (url.pathname !== "/v1/messages") throw new Error("Claude Compat blocked an unexpected request path");
         }
-        if (url.hostname !== "api.anthropic.com" || !url.pathname.includes("/messages")) {
+        if (!isEndpoint(url) || !url.pathname.includes("/messages")) {
           return baseFetch(input, init);
         }
         const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
         for (const [name, value] of Object.entries(compatibleHeaders(recipe, wireSessionId))) headers.set(name, value);
+        if (proxy) {
+          if (headers.get("authorization") !== `Bearer ${PROXY_LAYOUT_TOKEN}`) {
+            throw new Error("Claude Compat proxy mode blocked unexpected wire authentication");
+          }
+          headers.set("authorization", `Bearer ${token}`);
+        }
         const body = patchCch(init?.body);
         if (strict) {
           validateEnvelope(body, headers, { token, model, recipe, sessionId: wireSessionId });
