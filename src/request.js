@@ -111,7 +111,7 @@ async function accountIdFor(token, fetchImpl, recipe, signal) {
   return identityByTokenHash.get(key);
 }
 
-function withoutAuthorization(headers) {
+export function withoutAuthorization(headers) {
   if (!headers) return headers;
   return Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== "authorization"));
 }

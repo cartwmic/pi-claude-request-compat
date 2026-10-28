@@ -172,6 +172,33 @@ test("proxy strict route sends a validated Claude Code request through the real 
   assert.equal(JSON.parse(request.body.metadata.user_id).account_uuid, undefined);
 });
 
+test("proxy strict route accepts the key from model headers and still sends only one Bearer key", async (t) => {
+  await withAgentDir(t);
+  const base = { ...getModel("anthropic", "claude-opus-4-8"), provider: PROXY_PROVIDER, api: PROXY_API, baseUrl: ORIGIN };
+  const shapes = [
+    [{ ...base, headers: { Authorization: `Bearer ${KEY}` } }, {}],
+    [{ ...base, headers: { authorization: `Bearer ${KEY}`, "x-extra": "kept" } }, { apiKey: KEY }]
+  ];
+  for (const [model, extra] of shapes) {
+    const stream = createFallbackStream(streamSimpleAnthropic, createAssistantMessageEventStream,
+      { strict: true, proxyOrigin: ORIGIN });
+    const requests = [];
+    const result = await stream(model, { messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 }] }, {
+      ...extra, sessionId: SESSION, maxRetries: 0,
+      fetch: async (input, init) => {
+        requests.push(new Headers(init.headers));
+        return new Response(sseResponse(model.id), { headers: { "content-type": "text/event-stream" } });
+      }
+    }).result();
+    assert.notEqual(result.stopReason, "error", result.errorMessage);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].get("authorization"), `Bearer ${KEY}`);
+    assert.equal(requests[0].has("x-api-key"), false);
+    if (model.headers["x-extra"]) assert.equal(requests[0].get("x-extra"), "kept");
+    assert.equal(model.headers.Authorization ?? model.headers.authorization, `Bearer ${KEY}`, "caller model untouched");
+  }
+});
+
 test("claudeCompatProxy registers a separate key-only provider and leaves Claude Compat alone", async (t) => {
   await withAgentDir(t);
   await assert.rejects(claudeCompatProxy({ registerProvider() {} }, { origin: "http://10.0.0.1:8317" }), /proxy origin/);

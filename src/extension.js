@@ -1,4 +1,4 @@
-import { createOAuthRequestMiddleware } from "./request.js";
+import { createOAuthRequestMiddleware, withoutAuthorization } from "./request.js";
 import { createProfile } from "./profile.js";
 import { DEFAULT_RECIPE } from "./recipes.js";
 import {
@@ -72,7 +72,11 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
         const wireContext = strict ? { ...context, messages: context.messages.map((message) =>
           message.role === "assistant" && message.provider === providerId
             ? { ...message, provider: "anthropic", api: "anthropic-messages" } : message) } : context;
-        const source = streamSimpleAnthropic(wireModel, wireContext, middleware(wireModel, wireContext, options));
+        const wireOptions = middleware(wireModel, wireContext, options);
+        // The SDK merges model headers over its own auth header. In proxy mode the
+        // key was validated above; the fetch wrapper alone puts it on the wire.
+        const sendModel = proxy ? { ...wireModel, headers: withoutAuthorization(wireModel.headers) } : wireModel;
+        const source = streamSimpleAnthropic(sendModel, wireContext, wireOptions);
         for await (const event of source) {
           if (strict) {
             for (const message of [event.partial, event.message, event.error]) {
