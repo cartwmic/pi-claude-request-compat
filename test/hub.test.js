@@ -264,7 +264,8 @@ test("no fallback when the request is aborted, when no directAuth is set, or whe
   const failed = await broken.stream(model, context(), { apiKey: KEY, maxRetries: 0, fetch: c.fetch }).result();
   assert.equal(failed.stopReason, "error");
   assert.match(failed.errorMessage, /hub unreachable \(ECONNREFUSED\); direct fallback unavailable: Use \/login anthropic/);
-  assert.deepEqual(broken.fallbacks, ["ECONNREFUSED"]);
+  assert.deepEqual(broken.fallbacks, [], "no 'used the direct login' notice when it was not used");
+  assert.match(broken.failures.at(-1), /hub unreachable \(ECONNREFUSED\)/);
   assert.ok(c.requests.every((request) => request.url.origin === ORIGIN));
 
   const bad = hubStream({ directAuth: async () => ({ apiKey: KEY }) });
@@ -272,6 +273,7 @@ test("no fallback when the request is aborted, when no directAuth is set, or whe
   const refused = await bad.stream(model, context(), { apiKey: KEY, maxRetries: 0, fetch: d.fetch }).result();
   assert.equal(refused.stopReason, "error");
   assert.match(refused.errorMessage, /OAuth only/);
+  assert.deepEqual(bad.fallbacks, []);
   assert.ok(d.requests.every((request) => request.url.origin === ORIGIN), "a cpa_ key is never sent to Anthropic");
 });
 

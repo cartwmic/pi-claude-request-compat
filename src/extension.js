@@ -134,7 +134,6 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
           // The cpa_ key never leaves this branch: auth headers are dropped and the
           // apiKey is replaced by the direct OAuth token before anything is sent.
           onState(`fallback · ${code}`);
-          onFallback(code);
           let auth;
           try {
             auth = await directAuth(options?.signal);
@@ -146,6 +145,9 @@ export function createFallbackStream(streamSimpleAnthropic, createStream, {
           if (directOptions.headers) directOptions.headers = withoutAuthorization(directOptions.headers);
           assertOfficialUrl(directModel.baseUrl);
           requireOAuth(directOptions, directModel.headers);
+          // Logged only once the direct login is in hand; a failure above surfaces
+          // through onFailure with the unreachable code instead.
+          onFallback(code);
           await send({ proxy: undefined, model: directModel, options: directOptions }, profile, names);
         }
         output.end();
