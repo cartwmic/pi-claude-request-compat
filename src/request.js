@@ -161,7 +161,26 @@ function patchCch(body) {
   return bytes;
 }
 
-export function createOAuthRequestMiddleware(profile = readProfile(), { strict = false, onValidated, onRejected, proxyOrigin } = {}) {
+// Hub-unreachable errors (decision 441): DNS failure, connect error or connect
+// timeout, raised before any HTTP response. Anything else is final.
+const UNREACHABLE_CODES = new Set([
+  "ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH",
+  "EHOSTDOWN", "ENETDOWN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"
+]);
+
+export function unreachableCode(error) {
+  for (let current = error, depth = 0; current && depth < 6; current = current.cause, depth++) {
+    if (typeof current.code === "string" && UNREACHABLE_CODES.has(current.code)) return current.code;
+    for (const inner of Array.isArray(current.errors) ? current.errors : []) {
+      if (typeof inner?.code === "string" && UNREACHABLE_CODES.has(inner.code)) return inner.code;
+    }
+  }
+  return undefined;
+}
+
+export function createOAuthRequestMiddleware(profile = readProfile(), {
+  strict = false, onValidated, onRejected, proxyOrigin, onResponse, onUnreachable
+} = {}) {
   const recipe = activeRecipe(profile);
   if (!profile || !recipe) {
     throw new Error("pi-claude-request-compat needs a local profile; run pi-claude-request-compat init");
@@ -276,7 +295,15 @@ export function createOAuthRequestMiddleware(profile = readProfile(), { strict =
           validateEnvelope(body, headers, { token, model, recipe, sessionId: wireSessionId });
           onValidated?.();
         }
-        const response = await baseFetch(input, { ...init, headers, body });
+        let response;
+        try {
+          response = await baseFetch(input, { ...init, headers, body });
+        } catch (error) {
+          const code = proxy && !init?.signal?.aborted && !options.signal?.aborted ? unreachableCode(error) : undefined;
+          if (code) onUnreachable?.(code);
+          throw error;
+        }
+        onResponse?.(response.status);
         if (response.status >= 400 && response.status < 500) onRejected?.(response.status);
         if (response.status >= 400 && response.status < 500 &&
             (await response.clone().text()).includes("claude_code_version_too_old")) {

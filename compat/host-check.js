@@ -20,7 +20,7 @@ test("real Pi loads Compat, blocks paid keys, and refuses missing-plugin fallbac
   await fs.writeFile(networkGuard, 'globalThis.fetch = async () => { throw new Error("Unexpected host-test network request"); };');
   const env = {
     PATH: process.env.PATH, HOME: root, PI_CODING_AGENT_DIR: root,
-    PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1",
+    PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", PI_CLAUDE_COMPAT_MODE: "direct",
     TERM: "dumb", NO_COLOR: "1", NODE_OPTIONS: `--import=${pathToFileURL(networkGuard).href}`
   };
   const run = async (args, launch = false) => {
