@@ -1,5 +1,51 @@
 export const COMPAT_PROVIDER = "claude-compat";
 export const COMPAT_API = "claude-compat-messages";
+export const PROXY_PROVIDER = "claude-compat-proxy";
+export const PROXY_API = "claude-compat-proxy-messages";
+// Selects Pi's OAuth request layout for proxy mode. The fetch wrapper replaces it
+// with the proxy key before any byte leaves the process; it is never a credential.
+export const PROXY_LAYOUT_TOKEN = "sk-ant-oat-claude-compat-proxy-layout";
+const PROXY_KEY = /^cpa_[A-Za-z0-9_-]{16,}$/;
+const LOOPBACK = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+// An owner-configured CLIProxyAPI origin: HTTPS, or plain HTTP on loopback only
+// (an SSH tunnel). No credentials, path, query or fragment.
+export function normalizeProxyOrigin(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("Claude Compat proxy mode needs a proxy origin");
+  }
+  const url = new URL(value);
+  if ((url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) ||
+      url.username || url.password || !["", "/"].includes(url.pathname) || url.search || url.hash) {
+    throw new Error("Claude Compat proxy origin must be HTTPS (or HTTP on loopback) with no path or credentials");
+  }
+  return url.origin;
+}
+
+// Proxy mode accepts exactly the configured origin; otherwise only Anthropic.
+export function assertEndpointUrl(value, proxyOrigin) {
+  if (!proxyOrigin) return assertOfficialUrl(value);
+  const url = new URL(value);
+  if (url.origin !== proxyOrigin || url.username || url.password ||
+      !["", "/", "/v1/messages"].includes(url.pathname)) {
+    throw new Error("Claude Compat requires the configured proxy endpoint");
+  }
+  return url;
+}
+
+// Proxy mode sends a CLIProxyAPI client key, never an Anthropic token or API key.
+export function requireProxyKey(options = {}, modelHeaders) {
+  const headers = new Headers(modelHeaders);
+  for (const [name, value] of new Headers(options.headers)) headers.set(name, value);
+  const bearer = headers.get("authorization");
+  const headerKey = bearer ? /^Bearer (cpa_\S+)$/.exec(bearer)?.[1] : undefined;
+  const key = options.apiKey ?? headerKey;
+  if (typeof key !== "string" || !PROXY_KEY.test(key) ||
+      (bearer && headerKey !== key) || headers.has("x-api-key")) {
+    throw new Error("Claude Compat proxy mode requires a cpa_ proxy key; Anthropic tokens, API keys and conflicting auth headers are blocked.");
+  }
+  return key;
+}
 
 export function assertOfficialUrl(value) {
   const url = new URL(value);

@@ -41,6 +41,26 @@ pi-claude-request-compat run --model claude-opus-4-8 -- --continue
 
 This pins the startup model, including resumed sessions. Starting plain `pi` with only a saved default does **not** provide missing-plugin protection. You can still deliberately select another provider during a session. Requests still consume subscription usage; this is not a spending cap.
 
+## Proxy mode (cartwmic fork)
+
+This fork adds a second, separate provider, **Claude Compat Proxy** (`claude-compat-proxy`), for a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub that holds the Anthropic OAuth logins. The default `claude-compat` provider is unchanged.
+
+- The request is the same validated Claude Code request, so the hub sees a native Claude Code client and passes it through.
+- Pi authenticates to the hub with a CLIProxyAPI client key (`cpa_…`). Anthropic tokens and API keys are rejected.
+- Only the configured origin is accepted: HTTPS, or HTTP on loopback (an SSH tunnel). No redirects.
+- The Anthropic account bootstrap call is skipped, because the hub owns the account. `metadata.user_id` has no `account_uuid`.
+- Pi still builds the OAuth request layout. It receives an inert marker token for that, and the fetch wrapper swaps in the proxy key. The marker never leaves the process.
+
+The proxy provider is not loaded by default. Call it from your own extension:
+
+```js
+import { claudeCompatProxy } from "pi-claude-request-compat/src/extension.js";
+export default (pi) => claudeCompatProxy(pi, { origin: "https://cliproxy.example.internal" });
+```
+
+The key comes from a stored credential (`/login claude-compat-proxy`), a `models.json` `apiKey` for `claude-compat-proxy`, or `PI_CLAUDE_COMPAT_PROXY_KEY`. The origin can also come from `PI_CLAUDE_COMPAT_PROXY_URL`. `/claude-compat-proxy-status` shows the last local validation.
+
+
 ## Developer checks
 
 ```sh
