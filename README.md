@@ -55,7 +55,7 @@ In this fork, `claude-compat` itself can route through a [CLIProxyAPI](https://g
 - **Base URL:** the route picks the endpoint. A model may carry the official base URL or the hub origin; anything else is blocked.
 
 ```js
-import claudeCompat from "pi-claude-request-compat/src/extension.js";
+import claudeCompat from "pi-claude-request-compat";
 export default (pi) => claudeCompat(pi, {
   origin: "https://cliproxy.example.internal",
   directAuth: async (signal) => ({ apiKey: await myAnthropicOAuthToken(signal) })
